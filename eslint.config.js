@@ -139,7 +139,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['scripts/**/*.{mjs,ts}', 'server/**/*.mjs', '*.config.{ts,js}'],
+    files: ['scripts/**/*.{mjs,ts}', 'server/**/*.mjs', 'server.mjs', '*.config.{ts,js}'],
     languageOptions: { globals: { ...globals.node } },
     rules: { '@typescript-eslint/no-explicit-any': 'off' },
   },
