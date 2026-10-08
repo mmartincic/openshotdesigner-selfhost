@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to a PR makes the in-flight run's answer obsolete, so cancel it
+# rather than paying for a result nobody will read. Runs on main keep their
+# own group per ref so a merge is never cancelled by a later PR push.
+concurrency:
+  group: ci-${{ github.ref }}
+  # A new PR commit supersedes its previous run. Never cancel an already
+  # running verification of main: deploy.yml is deliberately tied to the
+  # exact SHA of each successful main run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Verify application
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          # jsdom 30 -> undici 8 needs Node >= 22 (webidl.util.markAsUncloneable).
+          # Keep in sync with the local dev runtime.
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Guard Playwright version drift
+        run: npm run check:playwright
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=critical
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Run unit and integration tests
+        run: npm run test
+
+      - name: Lint and check source encoding
+        run: npm run lint
+
+      - name: Build application
+        run: npm run build
+
+      - name: Enforce bundle budget
+        run: npm run check:bundle
+
+      - name: Enforce the domain-command ratchet
+        run: npm run check:commands
+
+      - name: Build GitHub Pages variant
+        run: GH_PAGES=true npm run build
+
+      - name: Install locked Playwright Chromium
+        # `npm exec --no` forbids an implicit download of a different
+        # Playwright version when the local package cannot be resolved.
+        run: npm exec --no -- playwright install --with-deps chromium
+
+      - name: Run critical browser journeys
+        run: npm run test:e2e
+
+      - name: Run offline browser journey
+        run: npm run test:e2e:offline
+
+      - name: Upload Playwright diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-${{ github.sha }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  firefox-smoke:
+    # Roadmap Phase 19: the full critical suite stays on Chromium; this job
+    # only proves boot/persist/export on Gecko without doubling browser time.
+    name: Firefox smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install locked Playwright Firefox
+        run: npm exec --no -- playwright install --with-deps firefox
+
+      - name: Run Firefox smoke journeys
+        run: npm run test:e2e:firefox
+
+      - name: Upload Firefox diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: firefox-report-${{ github.sha }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,352 @@
+import { describe, expect, it } from 'vitest';
+import type { BreakdownItem, ScriptScene } from '../script/types';
+import {
+  BREAKDOWN_CATEGORIES,
+  attachBreakdownItemsToScenes,
+  breakdownCategoryLabel,
+  breakdownForScene,
+  breakdownItemKey,
+  breakdownItemsForLines,
+  breakdownTagsForLine,
+  groupBreakdownItems,
+  pruneBreakdownScriptLines,
+  removeBreakdownItem,
+  sceneNumbersForBreakdownItem,
+  scenesForBreakdownItem,
+  tagBreakdownItem,
+  untagScriptLine,
+  updateBreakdownItem,
+} from '../script/breakdownTags';
+
+const lines = [
+  { id: 'l1', sceneNumber: '4' },
+  { id: 'l2', sceneNumber: '4' },
+  { id: 'l3', sceneNumber: '9' },
+  { id: 'l4' }, // before the first slugline: belongs to no scene
+];
+
+const scenes: ScriptScene[] = [
+  { id: 's4', sceneNumber: '4', heading: 'INT. BAR — NIGHT', characterIds: [], breakdownItemIds: [] },
+  { id: 's9', sceneNumber: '9', heading: 'EXT. STREET — DAY', characterIds: [], breakdownItemIds: [] },
+];
+
+describe('categories', () => {
+  it('lists every category exactly once and puts "other" last', () => {
+    const values = BREAKDOWN_CATEGORIES.map((c) => c.value);
+    expect(new Set(values).size).toBe(values.length);
+    expect(values[values.length - 1]).toBe('other');
+  });
+
+  it('labels a category, falling back to its raw value', () => {
+    expect(breakdownCategoryLabel('prop')).toBe('Props');
+    expect(breakdownCategoryLabel('nonsense' as never)).toBe('nonsense');
+  });
+});
+
+describe('tagBreakdownItem', () => {
+  it('creates an item with the lines it was tagged from', () => {
+    const items = tagBreakdownItem([], { category: 'prop', name: 'Whiskey glass', scriptLineIds: ['l1'] });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ category: 'prop', name: 'Whiskey glass', sourceScriptLineIds: ['l1'] });
+  });
+
+  it('trims the name and rejects a blank one', () => {
+    expect(tagBreakdownItem([], { category: 'prop', name: '  Ledger  ' })[0].name).toBe('Ledger');
+    expect(tagBreakdownItem([], { category: 'prop', name: '   ' })).toEqual([]);
+  });
+
+  it('merges a repeat tag into the existing item instead of duplicating it', () => {
+    // This is what makes "appears in scenes 4 and 9" derivable rather than
+    // something anyone has to maintain by hand.
+    let items = tagBreakdownItem([], { category: 'prop', name: 'Ledger', scriptLineIds: ['l1'] });
+    items = tagBreakdownItem(items, { category: 'prop', name: 'ledger', scriptLineIds: ['l3'] });
+    expect(items).toHaveLength(1);
+    expect(items[0].sourceScriptLineIds!.sort()).toEqual(['l1', 'l3']);
+  });
+
+  it('treats the same name in a different category as a different element', () => {
+    let items = tagBreakdownItem([], { category: 'prop', name: 'Coat' });
+    items = tagBreakdownItem(items, { category: 'wardrobe', name: 'Coat' });
+    expect(items).toHaveLength(2);
+  });
+
+  it('does not duplicate a line id that was already recorded', () => {
+    let items = tagBreakdownItem([], { category: 'prop', name: 'Ledger', scriptLineIds: ['l1'] });
+    items = tagBreakdownItem(items, { category: 'prop', name: 'Ledger', scriptLineIds: ['l1'] });
+    expect(items[0].sourceScriptLineIds).toEqual(['l1']);
+  });
+
+  it('never mutates the input list', () => {
+    const original: BreakdownItem[] = [];
+    tagBreakdownItem(original, { category: 'prop', name: 'Ledger' });
+    expect(original).toHaveLength(0);
+  });
+});
+
+describe('editing and removal', () => {
+  const items = tagBreakdownItem([], { category: 'prop', name: 'Ledger', scriptLineIds: ['l1', 'l3'] });
+
+  it('updates a field without touching the others', () => {
+    const next = updateBreakdownItem(items, items[0].id, { notes: 'Period-correct' });
+    expect(next[0].notes).toBe('Period-correct');
+    expect(next[0].name).toBe('Ledger');
+  });
+
+  it('removes an item', () => {
+    expect(removeBreakdownItem(items, items[0].id)).toEqual([]);
+    expect(removeBreakdownItem(items, 'ghost')).toHaveLength(1);
+  });
+
+  it('untags one line and keeps the item', () => {
+    const next = untagScriptLine(items, items[0].id, 'l1');
+    expect(next[0].sourceScriptLineIds).toEqual(['l3']);
+  });
+
+  it('keeps an item that has been untagged everywhere — it is still needed', () => {
+    let next = untagScriptLine(items, items[0].id, 'l1');
+    next = untagScriptLine(next, items[0].id, 'l3');
+    expect(next).toHaveLength(1);
+    expect(next[0].sourceScriptLineIds).toEqual([]);
+  });
+});
+
+describe('grouping and scene resolution', () => {
+  const items = [
+    ...tagBreakdownItem([], { category: 'prop', name: 'Ledger', scriptLineIds: ['l1'] }),
+    ...tagBreakdownItem([], { category: 'prop', name: 'Ashtray', scriptLineIds: ['l3'] }),
+    ...tagBreakdownItem([], { category: 'vehicle', name: 'Taxi', scriptLineIds: ['l3'] }),
+    ...tagBreakdownItem([], { category: 'stunt', name: 'Fall', scriptLineIds: ['gone'] }),
+  ];
+
+  it('groups by category in display order and sorts names inside a group', () => {
+    const groups = groupBreakdownItems(items);
+    expect(groups.map((g) => g.category)).toEqual(['prop', 'vehicle', 'stunt']);
+    expect(groups[0].items.map((i) => i.name)).toEqual(['Ashtray', 'Ledger']);
+  });
+
+  it('omits categories with nothing in them', () => {
+    expect(groupBreakdownItems(items).some((g) => g.category === 'wardrobe')).toBe(false);
+  });
+
+  it('resolves the scene numbers an item was tagged from', () => {
+    const ledger = items.find((i) => i.name === 'Ledger')!;
+    expect(sceneNumbersForBreakdownItem(ledger, lines)).toEqual(['4']);
+  });
+
+  it('resolves the scenes themselves', () => {
+    const taxi = items.find((i) => i.name === 'Taxi')!;
+    expect(scenesForBreakdownItem(taxi, lines, scenes).map((s) => s.sceneNumber)).toEqual(['9']);
+  });
+
+  it('reports no scenes for an item whose lines are gone, rather than dropping it', () => {
+    const fall = items.find((i) => i.name === 'Fall')!;
+    expect(scenesForBreakdownItem(fall, lines, scenes)).toEqual([]);
+    expect(groupBreakdownItems(items).some((g) => g.category === 'stunt')).toBe(true);
+  });
+
+  it('ignores a source line that belongs to no scene', () => {
+    const orphan = tagBreakdownItem([], { category: 'prop', name: 'Cup', scriptLineIds: ['l4'] })[0];
+    expect(sceneNumbersForBreakdownItem(orphan, lines)).toEqual([]);
+  });
+
+  it('lists what one scene needs', () => {
+    const scene9 = breakdownForScene(items, lines, '9');
+    expect(scene9.map((g) => g.category)).toEqual(['prop', 'vehicle']);
+    expect(scene9[0].items.map((i) => i.name)).toEqual(['Ashtray']);
+  });
+
+  it('returns nothing for a scene with no tagged elements', () => {
+    expect(breakdownForScene(items, lines, '99')).toEqual([]);
+  });
+});
+
+describe('breakdownItemKey', () => {
+  it('is case- and whitespace-insensitive within a category', () => {
+    expect(breakdownItemKey({ category: 'prop', name: ' Ledger ' })).toBe(
+      breakdownItemKey({ category: 'prop', name: 'ledger' }),
+    );
+  });
+});
+
+describe('attachBreakdownItemsToScenes', () => {
+  const items = [
+    ...tagBreakdownItem([], { category: 'prop', name: 'Ledger', scriptLineIds: ['l1'] }),
+    ...tagBreakdownItem([], { category: 'prop', name: 'Ashtray', scriptLineIds: ['l3'] }),
+    ...tagBreakdownItem([], { category: 'vehicle', name: 'Taxi', scriptLineIds: ['l3'] }),
+  ];
+
+  it('gives each scene the ids of the elements tagged inside it', () => {
+    const attached = attachBreakdownItemsToScenes(scenes, lines, items);
+    const scene4 = attached.find((s) => s.sceneNumber === '4')!;
+    const names = scene4.breakdownItemIds.map((id) => items.find((i) => i.id === id)!.name);
+    expect(names.sort()).toEqual(['Ledger']);
+    const scene9 = attached.find((s) => s.sceneNumber === '9')!;
+    expect(scene9.breakdownItemIds.map((id) => items.find((i) => i.id === id)!.name).sort())
+      .toEqual(['Ashtray', 'Taxi']);
+  });
+
+  it('keeps ids a scene already had rather than replacing them', () => {
+    const seeded = scenes.map((s) => ({ ...s, breakdownItemIds: ['pre-existing'] }));
+    const attached = attachBreakdownItemsToScenes(seeded, lines, items);
+    expect(attached[0].breakdownItemIds[0]).toBe('pre-existing');
+    expect(attached[0].breakdownItemIds.length).toBe(2);
+  });
+
+  it('does not duplicate an id when the same element is tagged twice in one scene', () => {
+    const twice = tagBreakdownItem(
+      tagBreakdownItem([], { category: 'prop', name: 'Ledger', scriptLineIds: ['l1'] }),
+      { category: 'prop', name: 'Ledger', scriptLineIds: ['l2'] },
+    );
+    expect(twice).toHaveLength(1);
+    const attached = attachBreakdownItemsToScenes(scenes, lines, twice);
+    expect(attached.find((s) => s.sceneNumber === '4')!.breakdownItemIds).toHaveLength(1);
+  });
+
+  it('ignores source lines that belong to no scene, and returns scenes untouched when nothing is tagged', () => {
+    const orphaned = tagBreakdownItem([], { category: 'prop', name: 'Cup', scriptLineIds: ['l4'] });
+    expect(attachBreakdownItemsToScenes(scenes, lines, orphaned)[0].breakdownItemIds).toEqual([]);
+    expect(attachBreakdownItemsToScenes(scenes, lines, [])).toEqual(scenes);
+  });
+});
+
+describe('source ranges', () => {
+  it('records where on the line the tagged words sit', () => {
+    const items = tagBreakdownItem([], {
+      category: 'prop',
+      name: 'Ashtray',
+      scriptRanges: [{ lineId: 'l1', startOffset: 10, endOffset: 17 }],
+    });
+    expect(items[0].sourceRanges).toEqual([{ lineId: 'l1', startOffset: 10, endOffset: 17 }]);
+  });
+
+  it('derives the source lines from the ranges, so a caller cannot pass one without the other', () => {
+    const items = tagBreakdownItem([], {
+      category: 'prop',
+      name: 'Ashtray',
+      scriptRanges: [{ lineId: 'l1', startOffset: 0, endOffset: 4 }, { lineId: 'l2' }],
+    });
+    expect(items[0].sourceScriptLineIds).toEqual(['l1', 'l2']);
+  });
+
+  it('keeps ranges from a repeat tag alongside the first ones', () => {
+    let items = tagBreakdownItem([], {
+      category: 'prop',
+      name: 'Ledger',
+      scriptRanges: [{ lineId: 'l1', startOffset: 0, endOffset: 6 }],
+    });
+    items = tagBreakdownItem(items, {
+      category: 'prop',
+      name: 'ledger',
+      scriptRanges: [{ lineId: 'l3', startOffset: 2, endOffset: 8 }],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].sourceRanges).toHaveLength(2);
+    expect(items[0].sourceScriptLineIds).toEqual(['l1', 'l3']);
+  });
+
+  it('does not stack the identical range twice', () => {
+    const range = { lineId: 'l1', startOffset: 0, endOffset: 6 };
+    let items = tagBreakdownItem([], { category: 'prop', name: 'Ledger', scriptRanges: [range] });
+    items = tagBreakdownItem(items, { category: 'prop', name: 'Ledger', scriptRanges: [{ ...range }] });
+    expect(items[0].sourceRanges).toHaveLength(1);
+  });
+
+  it('lets a whole-line tag swallow the partial ones on that line', () => {
+    // Otherwise the page would draw the element twice on the same line, once
+    // over the words and once over everything.
+    let items = tagBreakdownItem([], {
+      category: 'prop',
+      name: 'Ledger',
+      scriptRanges: [{ lineId: 'l1', startOffset: 0, endOffset: 6 }],
+    });
+    items = tagBreakdownItem(items, { category: 'prop', name: 'Ledger', scriptRanges: [{ lineId: 'l1' }] });
+    expect(items[0].sourceRanges).toEqual([{ lineId: 'l1' }]);
+  });
+
+  it('untagging a line drops its ranges too', () => {
+    let items = tagBreakdownItem([], {
+      category: 'prop',
+      name: 'Ledger',
+      scriptRanges: [{ lineId: 'l1', startOffset: 0, endOffset: 6 }, { lineId: 'l3' }],
+    });
+    items = untagScriptLine(items, items[0].id, 'l1');
+    expect(items[0].sourceRanges).toEqual([{ lineId: 'l3' }]);
+    expect(items[0].sourceScriptLineIds).toEqual(['l3']);
+  });
+});
+
+describe('breakdownTagsForLine', () => {
+  const items = tagBreakdownItem(
+    tagBreakdownItem([], {
+      category: 'prop',
+      name: 'Ledger',
+      scriptRanges: [{ lineId: 'l1', startOffset: 0, endOffset: 6 }],
+    }),
+    { category: 'vehicle', name: 'Taxi', scriptRanges: [{ lineId: 'l1', startOffset: 8, endOffset: 12 }] },
+  );
+
+  it('returns every element tagged on the line with its range', () => {
+    const tags = breakdownTagsForLine(items, 'l1');
+    expect(tags.map((tag) => tag.item.name)).toEqual(['Ledger', 'Taxi']);
+    expect(tags[1].range).toEqual({ lineId: 'l1', startOffset: 8, endOffset: 12 });
+  });
+
+  it('returns nothing for a line nobody tagged', () => {
+    expect(breakdownTagsForLine(items, 'l9')).toEqual([]);
+  });
+
+  it('yields a rangeless tag for an element saved before ranges existed', () => {
+    // The page renders that as a whole-line mark rather than dropping it.
+    const legacy: BreakdownItem[] = [
+      { id: 'b1', category: 'prop', name: 'Ashtray', sourceScriptLineIds: ['l1'] },
+    ];
+    const tags = breakdownTagsForLine(legacy, 'l1');
+    expect(tags).toHaveLength(1);
+    expect(tags[0].range).toBeUndefined();
+  });
+});
+
+describe('breakdownItemsForLines', () => {
+  const items = tagBreakdownItem(
+    tagBreakdownItem([], { category: 'prop', name: 'Ledger', scriptLineIds: ['l1'] }),
+    { category: 'vehicle', name: 'Taxi', scriptLineIds: ['l3'] },
+  );
+
+  it('lists what is tagged anywhere in the selection, each element once', () => {
+    expect(breakdownItemsForLines(items, ['l1', 'l3']).map((i) => i.name)).toEqual(['Ledger', 'Taxi']);
+    expect(breakdownItemsForLines(items, ['l1']).map((i) => i.name)).toEqual(['Ledger']);
+    expect(breakdownItemsForLines(items, [])).toEqual([]);
+  });
+});
+
+describe('pruneBreakdownScriptLines', () => {
+  const items = tagBreakdownItem([], {
+    category: 'prop',
+    name: 'Ledger',
+    scriptRanges: [{ lineId: 'l1', startOffset: 0, endOffset: 6 }, { lineId: 'l2' }],
+  });
+
+  it('drops pointers at lines the script no longer has', () => {
+    const next = pruneBreakdownScriptLines(items, ['l1']);
+    expect(next[0].sourceScriptLineIds).toEqual(['l1']);
+    expect(next[0].sourceRanges).toEqual([{ lineId: 'l1', startOffset: 0, endOffset: 6 }]);
+  });
+
+  it('keeps the element when every line it came from is gone', () => {
+    // The prop is still needed; only the pointer into the script is stale.
+    const next = pruneBreakdownScriptLines(items, []);
+    expect(next).toHaveLength(1);
+    expect(next[0].sourceScriptLineIds).toEqual([]);
+    expect(next[0].sourceRanges).toEqual([]);
+  });
+
+  it('leaves untouched items identical, so callers can skip a needless write', () => {
+    const next = pruneBreakdownScriptLines(items, ['l1', 'l2']);
+    expect(next[0]).toBe(items[0]);
+  });
+
+  it('does not invent fields on an element that was never tagged in the script', () => {
+    const manual: BreakdownItem[] = [{ id: 'b1', category: 'prop', name: 'Ashtray' }];
+    expect(pruneBreakdownScriptLines(manual, [])[0]).toEqual({ id: 'b1', category: 'prop', name: 'Ashtray' });
+  });
+});

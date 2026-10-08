@@ -1,0 +1,286 @@
+@import "tailwindcss";
+
+#right-sidebar:not(.is-fullscreen) {
+  width: var(--sidebar-width, 860px);
+}
+
+#floor-plan-canvas-container {
+  touch-action: none;
+}
+
+@media (max-width: 900px) {
+  /* The navbar collapses its own controls in React; CSS only keeps it tidy. */
+  #top-navbar {
+    min-height: 3rem;
+    height: auto !important;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  #top-navbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  #top-navbar > div {
+    flex-shrink: 0;
+  }
+
+  #top-navbar input[type='text'] {
+    max-width: 8rem;
+  }
+
+  #right-sidebar:not(.is-fullscreen) {
+    position: absolute;
+    z-index: 40;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100% !important;
+    /* Height is driven by the bottom-sheet size toggle (peek / half / full) */
+    height: var(--sheet-height, min(52vh, 520px)) !important;
+    max-height: 92vh;
+    border-left: 0 !important;
+    border-top: 1px solid rgb(51 65 85);
+    border-radius: 1rem 1rem 0 0;
+    transition: height 0.18s ease;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Drag-to-resize edge is desktop-only */
+  #right-sidebar > div:first-child {
+    display: none;
+  }
+
+  /* Tabs stay tappable: icons keep their labels but shrink */
+  #right-sidebar button {
+    touch-action: manipulation;
+  }
+
+  #timeline-bar {
+    height: 3.5rem !important;
+    padding: 0.25rem 0.5rem !important;
+  }
+
+  #timeline-bar > div:first-child button:not(#btn-play-pause),
+  #timeline-bar > div:last-child {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  /* The palette collapses tools into its overflow menu — it never scrolls. */
+  #left-toolbar {
+    width: 3.25rem !important;
+    padding-top: 0.35rem !important;
+    padding-bottom: 0.35rem !important;
+  }
+
+  #left-toolbar button {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+  }
+
+  #timeline-bar > div:nth-child(2) {
+    padding-left: 0.25rem !important;
+    padding-right: 0.25rem !important;
+  }
+
+  input, select, textarea {
+    font-size: 16px;
+  }
+
+  /* Shot list table scrolls horizontally instead of squeezing columns */
+  #shot-list-panel table {
+    min-width: 44rem;
+  }
+}
+
+/* Tap targets on any touch device */
+@media (pointer: coarse) {
+  button, [role='button'] {
+    touch-action: manipulation;
+  }
+}
+
+/* Shared panel scrollbar — horizontal and vertical, in both themes. */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.8) transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(51, 65, 85, 0.8);
+  border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 1);
+}
+
+html:not(.dark) .custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(226, 232, 240, 0.7);
+}
+
+html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.9);
+}
+
+html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 1);
+}
+
+/* Print styling for Director's Call Sheet, Floor Plans, Shot Lists & Complete Production Package */
+@page {
+  size: A4 portrait;
+  margin: 10mm 10mm 12mm 10mm;
+}
+
+@media print {
+  html,
+  body {
+    width: 100% !important;
+    height: auto !important;
+    min-height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    overflow: visible !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide UI navigation, toolbars, and control bars.
+
+     These are matched by ID, never by element name. A bare `header`/`aside`
+     rule also matched the <header> masthead of every printable report — call
+     sheet, stripboard, coverage, crew sheet, DMX patch, sides, mood board —
+     so those documents printed with no title block, no production name, no
+     date and no logo. Every piece of app chrome already carries an id, so
+     there is nothing the element selectors caught that these do not. */
+  #left-toolbar,
+  #top-navbar,
+  #right-sidebar,
+  #timeline-bar,
+  #floor-plan-canvas-container,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  /* App root: release the h-screen / overflow-hidden clamp so the printed
+     package can flow across multiple A4 pages instead of being clipped to one */
+  #app-root {
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  /* Modal unwrap so multi-page documents flow naturally onto subsequent A4 pages */
+  #export-modal {
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+  }
+
+  #export-modal > div {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  #printable-content {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+  }
+
+  /* Tables: repeat header on each new A4 page and never cut rows in half */
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto !important;
+    break-inside: auto !important;
+  }
+
+  thead {
+    display: table-header-group !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  tbody {
+    display: table-row-group !important;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Headings: avoid orphaned titles at the bottom of pages */
+  h1, h2, h3, h4, .print-heading {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
+
+  /* Cards, storyboards, and grouped items remain intact */
+  .break-inside-avoid,
+  .storyboard-card,
+  .gear-cat-card {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Sections allow seamless dynamic pagination */
+  .print-section {
+    page-break-inside: auto !important;
+    break-inside: auto !important;
+    margin-bottom: 24px !important;
+  }
+
+  /* Blueprint diagram sizing on print */
+  #print-floorplan-svg {
+    max-height: 480px !important;
+    width: 100% !important;
+  }
+}

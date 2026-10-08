@@ -1,0 +1,201 @@
+import React from 'react';
+import { ShapeElement } from '../../types';
+import { getSymbolById } from '../../domain/assets';
+
+interface ShapesLayerProps {
+  shapes: ShapeElement[];
+  selectedIds: string[];
+  onSelect: (id: string, e: React.PointerEvent) => void;
+  onDoubleClick?: (id: string, e: React.MouseEvent) => void;
+  canvasScale: number;
+  categoryOpacity?: { shapes?: number };
+  /**
+   * When true, shapes hidden with `visible === false` are drawn as faint dashed
+   * ghost outlines so they stay findable and clickable on the interactive
+   * canvas. Exports keep them truly invisible (omit this prop / pass false).
+   */
+  showHiddenGhosts?: boolean;
+}
+
+/** Outline path for the shapes that aren't a plain rect/ellipse. */
+const polygonPoints = (shape: ShapeElement): string => {
+  const w = shape.width;
+  const h = shape.height;
+  const half = { x: w / 2, y: h / 2 };
+
+  switch (shape.shapeType) {
+    case 'triangle':
+      return `0,${-half.y} ${half.x},${half.y} ${-half.x},${half.y}`;
+    case 'diamond':
+      return `0,${-half.y} ${half.x},0 0,${half.y} ${-half.x},0`;
+    case 'pentagon':
+    case 'hexagon': {
+      const sides = shape.shapeType === 'pentagon' ? 5 : 6;
+      return Array.from({ length: sides }, (_, i) => {
+        const angle = (Math.PI * 2 * i) / sides - Math.PI / 2;
+        return `${(Math.cos(angle) * w) / 2},${(Math.sin(angle) * h) / 2}`;
+      }).join(' ');
+    }
+    case 'star': {
+      return Array.from({ length: 10 }, (_, i) => {
+        const angle = (Math.PI * i) / 5 - Math.PI / 2;
+        const radius = i % 2 === 0 ? 1 : 0.45;
+        return `${(Math.cos(angle) * w * radius) / 2},${(Math.sin(angle) * h * radius) / 2}`;
+      }).join(' ');
+    }
+    default:
+      return '';
+  }
+};
+
+/**
+ * Free-form shapes on the floor plan: blocking zones, set pieces, light pools,
+ * callout boxes. Drawn under the elements so they read as background graphics.
+ */
+const ShapesLayerImpl: React.FC<ShapesLayerProps> = ({ shapes, selectedIds, onSelect, onDoubleClick, canvasScale, categoryOpacity, showHiddenGhosts }) => (
+  <g className="shapes-layer" opacity={categoryOpacity?.shapes ?? 1.0}>
+    {shapes.map((shape) => {
+      const hidden = shape.visible === false;
+      // Truly invisible in exports / non-interactive contexts.
+      if (hidden && !showHiddenGhosts) return null;
+
+      const isSelected = selectedIds.includes(shape.id);
+      const symbol = shape.symbolId ? getSymbolById(shape.symbolId) : undefined;
+      const fill = shape.filled === false ? 'none' : shape.color || '#38bdf8';
+      const stroke = shape.strokeColor || shape.color || '#38bdf8';
+      const strokeWidth = shape.strokeWidth ?? 2;
+      const dash =
+        shape.dashStyle === 'dashed'
+          ? `${10 / canvasScale} ${6 / canvasScale}`
+          : shape.dashStyle === 'dotted'
+            ? `${2 / canvasScale} ${5 / canvasScale}`
+            : undefined;
+
+      const common = hidden
+        ? // Faint dashed ghost so a hidden shape stays findable & clickable.
+          {
+            fill: 'none',
+            fillOpacity: 0,
+            stroke: '#94a3b8',
+            strokeWidth,
+            strokeOpacity: 0.55,
+            strokeDasharray: `${6 / canvasScale} ${4 / canvasScale}`,
+            vectorEffect: 'non-scaling-stroke' as const,
+          }
+        : {
+            fill,
+            fillOpacity: shape.filled === false ? 0 : (shape.opacity ?? 0.35),
+            stroke,
+            strokeWidth,
+            strokeOpacity: shape.strokeOpacity ?? 1,
+            strokeDasharray: dash,
+            vectorEffect: 'non-scaling-stroke' as const,
+          };
+
+      return (
+        <g
+          key={shape.id}
+          transform={`translate(${shape.x}, ${shape.y}) rotate(${shape.rotation || 0})`}
+          onPointerDown={(e) => onSelect(shape.id, e)}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            onDoubleClick?.(shape.id, e);
+          }}
+          style={{ cursor: shape.locked ? 'default' : 'move' }}
+          className="shape-element"
+        >
+          {symbol && !hidden ? (
+            <g
+              transform={`translate(${-shape.width / 2}, ${-shape.height / 2}) scale(${shape.width / 100}, ${shape.height / 100})`}
+              color={stroke}
+              opacity={shape.opacity ?? 1}
+            >
+              <title>{symbol.name}</title>
+              <rect x="0" y="0" width="100" height="100" fill="transparent" />
+              {/* Registry markup is curated application data, never project/user HTML. */}
+              <g dangerouslySetInnerHTML={{ __html: symbol.svg }} />
+            </g>
+          ) : shape.shapeType === 'circle' || shape.shapeType === 'ellipse' ? (
+            <ellipse rx={shape.width / 2} ry={shape.height / 2} {...common} />
+          ) : shape.shapeType === 'rectangle' ? (
+            <rect
+              x={-shape.width / 2}
+              y={-shape.height / 2}
+              width={shape.width}
+              height={shape.height}
+              rx={shape.cornerRadius ?? 0}
+              {...common}
+            />
+          ) : shape.shapeType === 'line' ? (
+            <g>
+              {/* Hit target line */}
+              <line
+                x1={-shape.width / 2}
+                y1={0}
+                x2={shape.width / 2}
+                y2={0}
+                stroke="transparent"
+                strokeWidth={strokeWidth + 14}
+              />
+              <line
+                x1={-shape.width / 2}
+                y1={0}
+                x2={shape.width / 2}
+                y2={0}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                strokeOpacity={shape.strokeOpacity ?? 1}
+                strokeDasharray={dash}
+                strokeLinecap="round"
+              />
+              {/* Endpoint caps */}
+              <circle cx={-shape.width / 2} cy={0} r={Math.max(3, strokeWidth)} fill={stroke} />
+              <circle cx={shape.width / 2} cy={0} r={Math.max(3, strokeWidth)} fill={stroke} />
+            </g>
+          ) : (
+            <polygon points={polygonPoints(shape)} {...common} />
+          )}
+
+          {/* Selection outline */}
+          {isSelected && (
+            <rect
+              x={-shape.width / 2 - 6}
+              y={-shape.height / 2 - 6}
+              width={shape.width + 12}
+              height={shape.height + 12}
+              fill="none"
+              stroke="#0ea5e9"
+              strokeWidth={1.5 / canvasScale}
+              strokeDasharray={`${5 / canvasScale} ${4 / canvasScale}`}
+              className="pointer-events-none"
+            />
+          )}
+
+          {shape.label && (
+            <text
+              y={shape.height / 2 + 14 / canvasScale}
+              textAnchor="middle"
+              fontSize={11 / canvasScale}
+              fill={hidden ? '#94a3b8' : stroke}
+              fontFamily="ui-sans-serif, system-ui, sans-serif"
+              fontWeight="600"
+              className="pointer-events-none"
+            >
+              {shape.label}
+            </text>
+          )}
+        </g>
+      );
+    })}
+  </g>
+);
+
+/**
+ * Memoised because the canvas re-renders on every pointer move — hovering the
+ * plan used to redraw every layer, glyph by glyph. The props are stable by
+ * construction on the canvas side (element buckets come from one memoised
+ * pass, callbacks are `useCallback`ed), so a shallow compare is enough and a
+ * custom comparator would only hide a prop that is not stable yet.
+ */
+export const ShapesLayer = React.memo(ShapesLayerImpl);
+ShapesLayerImpl.displayName = 'ShapesLayer';

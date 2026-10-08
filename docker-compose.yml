@@ -1,0 +1,24 @@
+# Self-hosted Open Shot Designer.
+#
+#   docker compose up -d --build
+#
+# Then open http://<host>:8080. Put it behind your reverse proxy with a login
+# in front (see SELF-HOSTING.md), or set AUTH_USER / AUTH_PASSWORD below.
+
+services:
+  openshotdesigner:
+    build: .
+    image: openshotdesigner:latest
+    container_name: openshotdesigner
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      MAX_BODY_MB: "256"
+      # Optional built-in login when no proxy handles auth:
+      # AUTH_USER: "mateo"
+      # AUTH_PASSWORD: "change-me"
+    # Run as the owner of ./data (TrueNAS "apps" is 568:568).
+    # user: "568:568"

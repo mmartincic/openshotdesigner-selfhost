@@ -1,0 +1,693 @@
+import React, { useMemo, useRef, useState } from 'react';
+import {
+  Download,
+  Mail,
+  Phone,
+  Plus,
+  Search,
+  Trash2,
+  Upload,
+  UserRound,
+  Users,
+  X,
+} from 'lucide-react';
+import { useFloorPlan } from '../../context/FloorPlanContext';
+import { useDialogs } from '../dialog/DialogProvider';
+import {
+  assignCastCommand,
+  assignKeyRoleCommand,
+  importPeopleCommand,
+  removePersonCommand,
+  setCastNumberCommand,
+  upsertPersonCommand,
+} from '../../domain/commands';
+import type { Person, PersonKind, UnavailableRange } from '../../domain/people';
+import {
+  KEY_CREW_ROLES,
+  PERSON_KINDS,
+  PERSON_KIND_LABELS,
+  PRODUCTION_DEPARTMENTS,
+  keyCrewMember,
+  callSheetPhone,
+  castPersonForCharacter,
+  filterPeople,
+  groupPeopleByDepartment,
+  parsePeopleCsv,
+  peopleToCsv,
+  usesProductionPhone,
+} from '../../domain/people';
+import { deriveScriptBreakdown } from '../../domain/script/logic';
+import { buildUsageIndex, usagesFor } from '../../domain/usage';
+import { UsageList } from '../common/UsageList';
+import { PersonAvatar } from './PersonAvatar';
+import { HeadshotField } from './HeadshotField';
+import { RateCardFields } from '../budget/RateCardFields';
+import { DEFAULT_BUDGET_SETTINGS } from '../../domain/budget';
+import { createId } from '../../domain/ids';
+import { downloadCsv, safeFileName } from '../../utils/download';
+import { useWorkspaceUI } from '../../context/WorkspaceUIContext';
+import { PdfExportButton } from '../common/PdfExportButton';
+
+const KIND_TINT: Record<PersonKind, string> = {
+  crew: 'bg-sky-500/15 text-sky-500',
+  cast: 'bg-emerald-500/15 text-emerald-500',
+  talent: 'bg-emerald-500/15 text-emerald-500',
+  contact: 'bg-slate-500/15 text-slate-500',
+  client: 'bg-violet-500/15 text-violet-500',
+  artist: 'bg-pink-500/15 text-pink-500',
+  other: 'bg-slate-500/15 text-slate-500',
+};
+
+const EMPTY_DRAFT = (): Person => ({ id: createId('person'), displayName: '', kind: 'crew' });
+
+interface PersonFormProps {
+  draft: Person;
+  onChange: (next: Person) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onDelete?: () => void;
+  isLight: boolean;
+}
+
+const PersonForm: React.FC<PersonFormProps> = ({ draft, onChange, onSave, onCancel, onDelete, isLight }) => {
+  const { project } = useFloorPlan();
+  const budgetSettings = project.budget?.settings ?? DEFAULT_BUDGET_SETTINGS;
+  const inputCls = `min-h-[34px] w-full rounded-md border px-2 py-1 text-xs outline-none ${
+    isLight ? 'border-slate-300 bg-white text-slate-800 focus:border-sky-400' : 'border-slate-700 bg-slate-950 text-slate-200 focus:border-sky-500'
+  }`;
+  const labelCls = `text-[9px] font-bold uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`;
+  const field = (key: keyof Person, label: string, placeholder?: string, type = 'text') => (
+    <label className="block space-y-1">
+      <span className={labelCls}>{label}</span>
+      <input
+        type={type}
+        value={(draft[key] as string | undefined) ?? ''}
+        onChange={(e) => onChange({ ...draft, [key]: e.target.value || undefined })}
+        placeholder={placeholder}
+        className={inputCls}
+      />
+    </label>
+  );
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave();
+      }}
+      className={`rounded-xl border p-3 space-y-2 ${isLight ? 'border-sky-200 bg-sky-50/60' : 'border-sky-900/60 bg-sky-950/20'}`}
+    >
+      <div className="grid grid-cols-2 gap-2">
+        <label className="block space-y-1 col-span-2 sm:col-span-1">
+          <span className={labelCls}>Name *</span>
+          <input
+            autoFocus
+            value={draft.displayName}
+            onChange={(e) => onChange({ ...draft, displayName: e.target.value })}
+            placeholder="Full name"
+            className={inputCls}
+            required
+          />
+        </label>
+        <label className="block space-y-1">
+          <span className={labelCls}>Type</span>
+          <select value={draft.kind ?? 'other'} onChange={(e) => onChange({ ...draft, kind: e.target.value as PersonKind })} className={inputCls}>
+            {PERSON_KINDS.map((kind) => (
+              <option key={kind} value={kind}>{PERSON_KIND_LABELS[kind]}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block space-y-1">
+          <span className={labelCls}>Department</span>
+          <input
+            list="contacts-departments"
+            value={draft.department ?? ''}
+            onChange={(e) => onChange({ ...draft, department: e.target.value || undefined })}
+            placeholder="Camera, Sound…"
+            className={inputCls}
+          />
+          <datalist id="contacts-departments">
+            {PRODUCTION_DEPARTMENTS.map((department) => <option key={department} value={department} />)}
+          </datalist>
+        </label>
+        <HeadshotField draft={draft} onChange={onChange} isLight={isLight} />
+        {field('role', 'Role / position', 'Gaffer / DIT / Camera Operator…')}
+        {field('phone', 'Work phone', '+1 555 0100', 'tel')}
+        {/* Held for emergencies and deliberately never suggested for paperwork:
+            a call sheet is copied, printed and left on a table. */}
+        {field('privatePhone', 'Private phone', 'Emergencies only', 'tel')}
+        {/* A number issued for this job only — a rented handset, a department
+            line. When present it is what the call sheet prints, because that is
+            the number the unit should ring today. */}
+        {field('productionPhone', 'Production phone', 'Unit handset / SIM', 'tel')}
+        {field('email', 'Email', 'name@example.com', 'email')}
+        {field('company', 'Company / agency')}
+        {/* The structured rate the budget prices by; the free-text note beside
+            it keeps whatever a number cannot say ("+ overtime after 10h"). */}
+        <RateCardFields
+          value={draft.rateCard}
+          onChange={(rateCard) => onChange({ ...draft, rateCard })}
+          currency={budgetSettings.currency}
+          defaultVatPercent={budgetSettings.defaultVatPercent}
+          inputCls={inputCls}
+          labelCls={labelCls}
+        />
+        {field('rate', 'Rate notes', 'Overtime, kit fee, buy-out…')}
+        <div className="col-span-2">{field('address', 'Address', 'Street, postcode, city')}</div>
+        <div className="col-span-2">{field('emergencyContact', 'Emergency contact', 'Name · phone')}</div>
+        {/* Lodging for away shoots — every part optional on its own, because a
+            production often knows the hotel before the dates or the reverse. */}
+        {field('hotelName', 'Hotel', 'Hotel Astoria')}
+        <div className="grid grid-cols-2 gap-2">
+          {field('hotelCheckIn', 'Check-in', '', 'date')}
+          {field('hotelCheckOut', 'Check-out', '', 'date')}
+        </div>
+        <div className="col-span-2">{field('hotelAddress', 'Hotel address', 'Street, postcode, city')}</div>
+        {/* Days this person is known to be elsewhere. The schedule-health
+            warnings read these and say so on the stripboard; blank rows are
+            dropped as they are edited rather than saved as junk. */}
+        <div className="col-span-2 space-y-1">
+          <span className={labelCls}>Unavailable</span>
+          {(draft.unavailableRanges ?? []).map((entry: UnavailableRange) => (
+            <div key={entry.id} className="grid grid-cols-[1fr_1fr_1.2fr_auto] gap-1.5 items-center">
+              <input
+                type="date"
+                value={entry.from}
+                aria-label="Unavailable from"
+                onChange={(e) =>
+                  onChange({
+                    ...draft,
+                    unavailableRanges: (draft.unavailableRanges ?? []).map((existing) =>
+                      existing.id === entry.id ? { ...existing, from: e.target.value } : existing,
+                    ),
+                  })
+                }
+                className={inputCls}
+              />
+              <input
+                type="date"
+                value={entry.to}
+                min={entry.from || undefined}
+                aria-label="Unavailable to"
+                onChange={(e) =>
+                  onChange({
+                    ...draft,
+                    unavailableRanges: (draft.unavailableRanges ?? []).map((existing) =>
+                      existing.id === entry.id ? { ...existing, to: e.target.value } : existing,
+                    ),
+                  })
+                }
+                className={inputCls}
+              />
+              <input
+                value={entry.note ?? ''}
+                placeholder="Reason (optional)"
+                aria-label={`Reason for unavailability ${entry.from}`}
+                onChange={(e) =>
+                  onChange({
+                    ...draft,
+                    unavailableRanges: (draft.unavailableRanges ?? []).map((existing) =>
+                      existing.id === entry.id
+                        ? { ...existing, note: e.target.value || undefined }
+                        : existing,
+                    ),
+                  })
+                }
+                className={inputCls}
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    ...draft,
+                    unavailableRanges: (draft.unavailableRanges ?? []).filter(
+                      (existing) => existing.id !== entry.id,
+                    ),
+                  })
+                }
+                aria-label="Remove these unavailable dates"
+                className={`p-1.5 rounded-lg border ${isLight ? 'border-slate-300 hover:bg-slate-100' : 'border-slate-700 hover:bg-slate-800'} hover:!text-red-500`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              // Keep rows being typed, drop ones emptied entirely, and always
+              // land the user on a fresh blank row to fill in.
+              const kept = (draft.unavailableRanges ?? []).filter((entry) => entry.from || entry.to || entry.note);
+              onChange({
+                ...draft,
+                unavailableRanges: [...kept, { id: createId('unavail'), from: '', to: '' }],
+              });
+            }}
+            className={`px-2 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1 ${isLight ? 'border-slate-300 hover:bg-slate-100' : 'border-slate-700 hover:bg-slate-800'}`}
+          >
+            <Plus className="w-3 h-3" /> Add dates away
+          </button>
+        </div>
+      </div>
+      <label className="block space-y-1">
+        <span className={labelCls}>Notes</span>
+        <textarea
+          value={draft.notes ?? ''}
+          onChange={(e) => onChange({ ...draft, notes: e.target.value || undefined })}
+          rows={2}
+          className={`${inputCls} resize-y`}
+          placeholder="Dietary needs, pickup, allergies, union…"
+        />
+      </label>
+      <div className="flex items-center gap-2 pt-1">
+        <button type="submit" disabled={!draft.displayName.trim()} className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold disabled:opacity-40">
+          Save
+        </button>
+        <button type="button" onClick={onCancel} className={`px-3 py-1.5 rounded-lg border text-xs font-semibold ${isLight ? 'border-slate-300 hover:bg-slate-100' : 'border-slate-700 hover:bg-slate-800'}`}>
+          Cancel
+        </button>
+        {onDelete && (
+          <button type="button" onClick={onDelete} className="ml-auto px-2.5 py-1.5 rounded-lg border border-rose-500/40 text-rose-500 text-xs font-bold flex items-center gap-1 hover:bg-rose-500/10">
+            <Trash2 className="w-3.5 h-3.5" /> Delete
+          </button>
+        )}
+      </div>
+    </form>
+  );
+};
+
+/**
+ * Production contacts / crew list (plan §4.5). People are project-level shared
+ * state; cast ↔ character links live in `castAssignments`. Everything here
+ * works without a screenplay — the cast section simply stays empty.
+ */
+export const ContactsPanel: React.FC = () => {
+  const { project, runCommand, scriptLines } = useFloorPlan();
+  const { theme, openExportModal } = useWorkspaceUI();
+  const { confirm } = useDialogs();
+  const isLight = theme === 'light';
+  const people = useMemo(() => project.people ?? [], [project.people]);
+  const castAssignments = useMemo(() => project.castAssignments ?? [], [project.castAssignments]);
+
+  const [query, setQuery] = useState('');
+  const [kindFilter, setKindFilter] = useState<PersonKind | 'all'>('all');
+  const [departmentFilter, setDepartmentFilter] = useState<string>('all');
+  const [editing, setEditing] = useState<Person | null>(null);
+  const [isNew, setIsNew] = useState(false);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const departments = useMemo(
+    () => [...new Set(people.map((person) => (person.department ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [people],
+  );
+  const visible = useMemo(
+    () => filterPeople(people, { query, kind: kindFilter, department: departmentFilter }),
+    [people, query, kindFilter, departmentFilter],
+  );
+  const groups = useMemo(() => groupPeopleByDepartment(visible), [visible]);
+  const usageIndex = useMemo(() => buildUsageIndex(project), [project]);
+
+  // Characters: persisted catalog merged with cues discovered in the script.
+  const breakdown = useMemo(
+    () => deriveScriptBreakdown(scriptLines, project.characters ?? [], project.locations ?? []),
+    [scriptLines, project.characters, project.locations],
+  );
+  // Any person can play a character (assignCast accepts every id); order the
+  // dropdown cast-first, then talent, then everyone else, alphabetical within
+  // each group.
+  const performers = useMemo(
+    () =>
+      [...people].sort((a, b) => {
+        const rankOf = (person: Person) => (person.kind === 'cast' ? 0 : person.kind === 'talent' ? 1 : 2);
+        return rankOf(a) - rankOf(b) || a.displayName.localeCompare(b.displayName);
+      }),
+    [people],
+  );
+
+  const savePerson = () => {
+    if (!editing) return;
+    runCommand(upsertPersonCommand, { person: editing }, { domain: 'people' });
+    setEditing(null);
+    setIsNew(false);
+  };
+
+  const deletePerson = (personId: string) => {
+    void confirm({
+      title: 'Remove contact?',
+      message: 'Remove this contact? Cast assignments and location contact links to them are cleared too.',
+      confirmLabel: 'Remove',
+      danger: true,
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      // The reference sweep across cast, locations, tasks and call-sheet
+      // pick-ups moved into `removePersonCommand`, so it is no longer
+      // reachable only by rendering this panel.
+      runCommand(removePersonCommand, { personId }, { domain: 'people' });
+      if (editing?.id === personId) {
+        setEditing(null);
+        setIsNew(false);
+      }
+    });
+  };
+
+  const setCast = (characterId: string, personId: string) => {
+    // The merged catalog rides along so discovered character ids stay stable.
+    runCommand(
+      assignCastCommand,
+      { characterId, personId, characters: breakdown.characters },
+      { domain: 'people' },
+    );
+  };
+
+  const renumberCast = (characterId: string, castNumber: number) => {
+    runCommand(setCastNumberCommand, { characterId, castNumber }, { domain: 'people' });
+  };
+
+  /**
+   * Assign (or vacate) a key production role. Director / DP additionally mirror
+   * into the legacy project fields the exports render, so the crew page and the
+   * scene inspector can never drift apart.
+   */
+  const assignRole = (roleKey: string, personId: string) => {
+    // Mirroring director / DP onto the project's own fields is the command's
+    // job now, so the crew page and the printed header cannot drift apart
+    // depending on which screen made the change.
+    runCommand(assignKeyRoleCommand, { roleKey, personId }, { domain: 'people' });
+  };
+
+  /** Heads named only as free text in the project details, with nobody linked. */
+  const { director: legacyDirector, cinematographer: legacyCinematographer } = project;
+  const legacyOnlyHeads = useMemo(() => {
+    // Read through a narrow map of just the two mirrored fields, so this memo
+    // depends on those and not on the whole project object.
+    const legacy: Record<string, string | undefined> = {
+      director: legacyDirector,
+      cinematographer: legacyCinematographer,
+    };
+    return KEY_CREW_ROLES.filter((role) => role.projectField)
+      .filter((role) => !keyCrewMember(people, role.key))
+      .map((role) => {
+        const name = (legacy[role.projectField as string] ?? '').trim();
+        return name ? `${role.label}: ${name}` : '';
+      })
+      .filter(Boolean);
+  }, [people, legacyDirector, legacyCinematographer]);
+
+  const exportCsv = () => {
+    // Was a detached anchor, which downloads nothing at all in Firefox, and
+    // a BOM-less CSV, which mangles every accented name the moment Excel opens
+    // it — on the one export that is entirely people's names.
+    downloadCsv(
+      peopleToCsv(people),
+      `${safeFileName(project.title, 'production')}-contacts.csv`,
+      { excelBom: true },
+    );
+  };
+
+  const importCsv = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const imported = parsePeopleCsv(String(reader.result ?? ''));
+      if (imported.length === 0) {
+        setImportMessage('No contacts found — the first row must be a header (Name, Department, Role, Phone, Email…).');
+        return;
+      }
+      runCommand(importPeopleCommand, { people: imported }, { domain: 'people' });
+      setImportMessage(`Imported ${imported.length} contact${imported.length === 1 ? '' : 's'}.`);
+    };
+    reader.readAsText(file);
+  };
+
+  const mutedCls = isLight ? 'text-slate-500' : 'text-slate-400';
+  const inputCls = `min-h-[34px] rounded-md border px-2 py-1 text-xs outline-none ${
+    isLight ? 'border-slate-200 bg-white text-slate-800 focus:border-sky-400' : 'border-slate-700 bg-slate-950/60 text-slate-200 focus:border-sky-500'
+  }`;
+  const btnCls = `min-h-[34px] flex items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition-colors ${
+    isLight ? 'bg-slate-200/80 text-slate-700 hover:bg-slate-300/80' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+  }`;
+
+  return (
+    <div className={`h-full overflow-y-auto custom-scrollbar p-3 space-y-3 ${isLight ? 'bg-white' : 'bg-slate-900'}`}>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv,text/csv"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) importCsv(file);
+        }}
+      />
+
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <p className={`text-[10px] font-bold uppercase tracking-[0.18em] ${mutedCls}`}>Production contacts</p>
+          <h2 className="text-lg font-semibold mt-0.5 flex items-center gap-2">
+            <Users className="w-4 h-4 text-sky-500" /> Crew, cast &amp; contacts
+          </h2>
+          <p className={`text-[11px] ${mutedCls}`}>
+            {people.length} people · {castAssignments.length} cast assignment{castAssignments.length === 1 ? '' : 's'} · used by call sheets, DOOD and crew lists
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            onClick={() => {
+              setEditing(EMPTY_DRAFT());
+              setIsNew(true);
+            }}
+            className="min-h-[34px] flex items-center gap-1.5 rounded-md px-3 bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add person
+          </button>
+          <button onClick={() => fileInputRef.current?.click()} className={btnCls} title="Import a CSV (Name, Type, Department, Role, Phone, Email…)">
+            <Upload className="w-3.5 h-3.5" /> Import CSV
+          </button>
+          <button onClick={exportCsv} disabled={people.length === 0} className={`${btnCls} disabled:opacity-40`}>
+            <Download className="w-3.5 h-3.5" /> Export CSV
+          </button>
+          <PdfExportButton onClick={() => openExportModal('crew')} disabled={people.length === 0} title="Kontaktliste als PDF exportieren" />
+        </div>
+      </div>
+
+      {importMessage && (
+        <p className={`text-[11px] flex items-center gap-2 ${mutedCls}`}>
+          {importMessage}
+          <button
+            onClick={() => setImportMessage(null)}
+            className="p-0.5"
+            title="Dismiss this import message"
+            aria-label="Dismiss this import message"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </p>
+      )}
+
+      {editing && isNew && (
+        <PersonForm draft={editing} onChange={setEditing} onSave={savePerson} onCancel={() => { setEditing(null); setIsNew(false); }} isLight={isLight} />
+      )}
+
+      {/* Key crew: the named heads paperwork refers to by role. Assignments are
+          stored as the person's role title (single source of truth), and the
+          two legacy project fields the exports read are mirrored on change. */}
+      <section className={`rounded-xl border p-3 space-y-2 ${isLight ? 'border-slate-200 bg-slate-50/70' : 'border-slate-800 bg-slate-950/40'}`}>
+        <div className="flex items-baseline justify-between gap-2 flex-wrap">
+          <h3 className={`text-[10px] font-black uppercase tracking-wider ${mutedCls}`}>Key crew</h3>
+          <p className={`text-[10px] ${mutedCls}`}>
+            One person can hold several jobs. Director and DP here are the same fields as the scene inspector and every export.
+          </p>
+        </div>
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {KEY_CREW_ROLES.map((role) => {
+            const holder = keyCrewMember(people, role.key);
+            return (
+              <label key={role.key} className="flex items-center gap-2">
+                <span className={`w-[42%] shrink-0 text-[10px] font-semibold ${mutedCls}`}>{role.label}</span>
+                <select
+                  value={holder?.id ?? ''}
+                  onChange={(e) => assignRole(role.key, e.target.value)}
+                  className={`${inputCls} flex-1 min-w-0`}
+                >
+                  <option value="">— unassigned —</option>
+                  {people.map((person) => (
+                    <option key={person.id} value={person.id}>
+                      {person.displayName || 'Unnamed'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            );
+          })}
+        </div>
+        {people.length === 0 && (
+          <p className={`text-[10px] ${mutedCls}`}>Add people first — then assign them to the roles above.</p>
+        )}
+        {(legacyOnlyHeads.length > 0) && (
+          <p className={`text-[10px] ${mutedCls}`}>
+            {legacyOnlyHeads.join(' · ')} — typed directly into the project details and not yet linked to
+            anyone on this list. Add them as a person to link phone, email and call times.
+          </p>
+        )}
+      </section>
+
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="relative flex-1 min-w-[160px]">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name, role, company…" className={`${inputCls} w-full !pl-7`} />
+        </div>
+        <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value as PersonKind | 'all')} className={inputCls}>
+          <option value="all">All types</option>
+          {PERSON_KINDS.map((kind) => <option key={kind} value={kind}>{PERSON_KIND_LABELS[kind]}</option>)}
+        </select>
+        <select value={departmentFilter} onChange={(e) => setDepartmentFilter(e.target.value)} className={inputCls}>
+          <option value="all">All departments</option>
+          {departments.map((department) => <option key={department} value={department}>{department}</option>)}
+        </select>
+      </div>
+
+      {people.length === 0 ? (
+        <div className={`rounded-xl border border-dashed p-8 text-center ${isLight ? 'border-slate-300' : 'border-slate-700'}`}>
+          <UserRound className="w-8 h-8 mx-auto mb-2 text-sky-500" />
+          <p className="text-sm font-semibold">No contacts yet</p>
+          <p className={`text-xs mt-1 ${mutedCls}`}>Add crew, cast and vendors here. They flow into call sheets, the crew list and the day-out-of-days automatically.</p>
+        </div>
+      ) : groups.length === 0 ? (
+        <p className={`text-xs ${mutedCls}`}>No contacts match the current filter.</p>
+      ) : (
+        groups.map((group) => (
+          <details key={group.department} className={`group rounded-xl border px-3 py-2 ${isLight ? 'border-slate-200 bg-white' : 'border-slate-800 bg-slate-950/40'}`}>
+            <summary className={`cursor-pointer list-none [&::-webkit-details-marker]:hidden text-[10px] font-black uppercase tracking-wider flex items-center gap-2 ${mutedCls}`}>
+              {group.department}
+              <span className={`font-mono text-[9px] px-1.5 rounded-full ${isLight ? 'bg-slate-200 text-slate-600' : 'bg-slate-800 text-slate-400'}`}>{group.people.length}</span>
+              <span className="ml-auto transition-transform group-open:rotate-90">›</span>
+            </summary>
+            <div className="space-y-1.5 pt-2">
+            {group.people.map((person) =>
+              editing && !isNew && editing.id === person.id ? (
+                <React.Fragment key={person.id}>
+                  <PersonForm
+                    draft={editing}
+                    onChange={setEditing}
+                    onSave={savePerson}
+                    onCancel={() => setEditing(null)}
+                    onDelete={() => deletePerson(person.id)}
+                    isLight={isLight}
+                  />
+                  {/* Where this person is used: days, call times, tasks, budget. */}
+                  <UsageList entries={usagesFor(usageIndex, 'person', person.id)} isLight={isLight} />
+                </React.Fragment>
+              ) : (
+                <button
+                  key={person.id}
+                  type="button"
+                  onClick={() => {
+                    setEditing({ ...person });
+                    setIsNew(false);
+                  }}
+                  className={`w-full text-left rounded-xl border px-3 py-2 flex items-center gap-3 transition-colors ${
+                    isLight ? 'border-slate-200 bg-white hover:border-sky-300' : 'border-slate-800 bg-slate-950/40 hover:border-sky-700'
+                  }`}
+                >
+                  <PersonAvatar
+                    person={person}
+                    size={32}
+                    fallbackClassName={KIND_TINT[person.kind ?? 'other']}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="text-sm font-semibold truncate">{person.displayName}</span>
+                      <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${KIND_TINT[person.kind ?? 'other']}`}>
+                        {PERSON_KIND_LABELS[person.kind ?? 'other']}
+                      </span>
+                    </span>
+                    <span className={`block text-[11px] truncate ${mutedCls}`}>
+                      {[person.role, person.company].filter(Boolean).join(' · ') || '—'}
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-1 flex-shrink-0">
+                    {/* The call button dials whatever the call sheet prints, so
+                        the list and the paperwork can never disagree. */}
+                    {callSheetPhone(person) && (
+                      <a
+                        href={`tel:${callSheetPhone(person)!.replace(/\s+/g, '')}`}
+                        onClick={(e) => e.stopPropagation()}
+                        title={
+                          usesProductionPhone(person)
+                            ? `${callSheetPhone(person)} — production number, used on call sheets`
+                            : callSheetPhone(person)
+                        }
+                        className={`p-1.5 rounded-md ${isLight ? 'hover:bg-slate-100' : 'hover:bg-slate-800'}`}
+                      >
+                        <Phone
+                          className={`w-3.5 h-3.5 ${usesProductionPhone(person) ? 'text-amber-500' : 'text-emerald-500'}`}
+                        />
+                      </a>
+                    )}
+                    {person.email && (
+                      <a href={`mailto:${person.email}`} onClick={(e) => e.stopPropagation()} title={person.email} className={`p-1.5 rounded-md ${isLight ? 'hover:bg-slate-100' : 'hover:bg-slate-800'}`}>
+                        <Mail className="w-3.5 h-3.5 text-sky-500" />
+                      </a>
+                    )}
+                  </span>
+                </button>
+              ),
+            )}
+            </div>
+          </details>
+        ))
+      )}
+
+      {breakdown.characters.length > 0 && (
+        <section className={`rounded-xl border p-3 space-y-2 ${isLight ? 'border-slate-200 bg-slate-50' : 'border-slate-800 bg-slate-950/40'}`}>
+          <h3 className="text-xs font-bold flex items-center gap-2">
+            <UserRound className="w-3.5 h-3.5 text-emerald-500" /> Cast assignments &amp; production numbers
+          </h3>
+          <p className={`text-[10px] ${mutedCls}`}>
+            Choose a performer for each character. A cast number is assigned automatically; edit the # field to use your production's numbering. Choosing an occupied number swaps the two roles safely.
+          </p>
+          {performers.length === 0 && (
+            <p className={`text-[11px] ${mutedCls}`}>Any person in the directory can be assigned to a character; cast and talent are listed first. Add people to get started.</p>
+          )}
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            <div className={`hidden sm:grid sm:col-span-2 grid-cols-[minmax(0,1fr)_56px_160px] gap-2 px-0.5 text-[9px] font-black uppercase tracking-wider ${mutedCls}`}>
+              <span>Character</span><span className="text-center">Cast #</span><span>Performer</span>
+            </div>
+            {breakdown.characters.map((character) => {
+              const assigned = castPersonForCharacter(castAssignments, people, character.id);
+              const assignment = castAssignments.find((candidate) => candidate.characterId === character.id);
+              return (
+                <label key={character.id} className="flex items-center gap-2 text-xs">
+                  <span className="font-bold uppercase tracking-wide truncate min-w-0 flex-1">{character.canonicalName}</span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={assignment?.castNumber ?? ''}
+                    disabled={!assignment}
+                    onChange={(e) => assignment && renumberCast(character.id, Number(e.target.value) || 1)}
+                    aria-label={`Cast number for ${character.canonicalName}`}
+                    title="Production cast number printed on stripboards"
+                    placeholder="#"
+                    className={`${inputCls} !w-14 text-center font-mono disabled:opacity-40`}
+                  />
+                  <select aria-label={`Performer for ${character.canonicalName}`} value={assigned?.id ?? ''} onChange={(e) => setCast(character.id, e.target.value)} className={`${inputCls} w-40`}>
+                    <option value="">— unassigned —</option>
+                    {performers.map((person) => {
+                      const hint = person.role ?? person.department;
+                      return (
+                        <option key={person.id} value={person.id}>
+                          {hint ? `${person.displayName} - ${hint}` : person.displayName}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+              );
+            })}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+};

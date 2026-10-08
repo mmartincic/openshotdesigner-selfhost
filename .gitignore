@@ -1,0 +1,26 @@
+node_modules/
+build/
+dist/
+coverage/
+playwright-report/
+test-results/
+blob-report/
+.DS_Store
+*.log
+.env*
+*.local
+*.tsbuildinfo
+.claude/
+.agent/
+.agents/
+.aistudio/
+.opencode/
+.cursor/
+.cursorrules
+.gemini/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+
+# Self-hosted server data (never commit)
+data/
