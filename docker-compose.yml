@@ -20,5 +20,7 @@ services:
       # Optional built-in login when no proxy handles auth:
       # AUTH_USER: "mateo"
       # AUTH_PASSWORD: "change-me"
-    # Run as the owner of ./data (TrueNAS "apps" is 568:568).
-    # user: "568:568"
+      # The container fixes ./data ownership and drops to this user itself;
+      # don't set `user:`.
+      # PUID: "568"
+      # PGID: "568"

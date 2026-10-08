@@ -25,11 +25,12 @@ WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY server ./server
 COPY LICENSE ./LICENSE
-# /data must be writable by whichever UID the container runs as. The default is
-# the image's "node" user (1000); on TrueNAS run it as 568 (apps) instead and
-# give that user write access to the dataset.
-RUN mkdir -p /data && chown node:node /data
-USER node
+# The container starts as root only long enough to make /data belong to
+# PUID:PGID (default 568:568, TrueNAS "apps"), then the server drops to that
+# user. A fresh root-owned volume therefore works without any permission setup.
+ENV PUID=568 \
+    PGID=568
+RUN mkdir -p /data
 VOLUME ["/data"]
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

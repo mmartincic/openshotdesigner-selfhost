@@ -57,6 +57,7 @@ TrueNAS. To restore, stop the app, put the files back and start it again.
 | `DATA_DIR` | `/data` | Where data is written |
 | `MAX_BODY_MB` | `256` | Largest single upload (one project JSON or one image) |
 | `AUTH_USER` / `AUTH_PASSWORD` | unset | Optional built-in basic auth. Leave unset when a proxy handles login |
+| `PUID` / `PGID` | `568` / `568` | User the server drops to after fixing `/data` ownership. `PUID=0` keeps it root |
 
 The server has **no user accounts**. Everyone who gets past the login sees the
 same library, so put a login in front of it (Authentik below, or the
@@ -83,13 +84,13 @@ The route: **push this folder to GitHub → GitHub Actions builds the image
    git init -b main
    git add -A
    git commit -m "Open Shot Designer 1.0.2, self-hosted"
-   git remote add origin https://github.com/<you>/openshotdesigner-selfhost.git
+   git remote add origin https://github.com/mmartincic/openshotdesigner-selfhost.git
    git push -u origin main
    ```
 
 3. Open the repo's **Actions** tab. The **Docker image** workflow starts by
    itself and takes about 3–5 minutes. When it's green, the image is at
-   `ghcr.io/<you>/openshotdesigner-selfhost:latest` (always lowercase).
+   `ghcr.io/mmartincic/openshotdesigner-selfhost:latest` (always lowercase).
    *CI* also runs (lint + tests). It's informational and doesn't block the
    image.
 
@@ -105,10 +106,15 @@ New GHCR packages start **private**, even from a public repo. Pick one:
   go to *Apps → Configuration → Docker registries → Add* with URI
   `ghcr.io`, your GitHub username and the token as password.
 
-### 3. Create the dataset
+### 3. Storage (nothing to prepare)
 
-Create a dataset such as `POOL/apps/openshotdesigner/data` and give the
-**apps** user (UID/GID 568) read/write access. The *Apps* ACL preset works.
+The default **ixVolume** works as-is. The container starts as root, gives
+`/data` to user/group 568 (TrueNAS *apps*), then drops to that user, so no
+dataset permissions are needed.
+
+If you'd rather keep the data in your own dataset (easier to snapshot and
+browse), create e.g. `POOL/apps/openshotdesigner` and mount it as a **Host
+Path** instead. Ownership is fixed the same way.
 
 ### 4. Custom App wizard
 
@@ -117,13 +123,13 @@ Create a dataset such as `POOL/apps/openshotdesigner/data` and give the
 | Field | Value |
 |---|---|
 | Application name | `openshotdesigner` |
-| Image repository | `ghcr.io/<you>/openshotdesigner-selfhost` |
-| Image tag | `latest` |
+| Image repository | `ghcr.io/mmartincic/openshotdesigner-selfhost` |
+| Image tag | `latest` (or a fixed build such as `sha-0b7e238`, see below) |
 | Pull policy | *Always pull image* |
 | Environment variables | none needed. Optionally `MAX_BODY_MB=256` |
 | Port forwarding | container port `8080` → host port `30480`, TCP (any free port) |
-| Storage | Host path `/mnt/POOL/apps/openshotdesigner/data` → mount path `/data` |
-| Security context / user | run as user `568`, group `568` |
+| Storage | ixVolume (default) **or** host path of your dataset → mount path `/data` |
+| Security context / user | **leave default.** Don't set a custom user, because the container drops to 568:568 itself |
 | Restart policy | unless stopped |
 
 Install, then check it from your LAN at `http://192.168.1.145:30480`. The
@@ -131,14 +137,28 @@ dashboard should say *"Everything is saved on your server"*, and the app logs
 print the data folder and how many projects it found. The image has a
 health check on `/healthz`, so TrueNAS shows it as healthy.
 
+**If the logs show `EACCES: permission denied` or `FATAL: /data is not
+writable`:** you're on an image from before 8 Oct 2026, or a custom user is
+set under *Security context*. Update the image, and clear the custom user so
+the container can fix `/data` itself.
+
 ### Updating
 
 Push a change to `main` and wait for the Actions run to finish. Then on
 TrueNAS open the app → **Edit** → **Save**. With *Always pull*, it fetches
 the new `latest`. Your data in the dataset is untouched.
 
-To pin versions instead of `latest`: `git tag v1.0.2-1 && git push --tags`
-publishes `:1.0.2-1`. Use that as the tag in the wizard.
+Every build is also tagged with its commit, e.g. `sha-0b7e238`. To check a
+build from the TrueNAS shell before switching the app to it:
+
+```sh
+sudo docker pull ghcr.io/mmartincic/openshotdesigner-selfhost:sha-0b7e238
+```
+
+To pin the app to one build, put that `sha-…` tag in the wizard instead of
+`latest`. With a pinned tag, *Always pull* never changes anything, so
+updating means editing the tag. For named versions:
+`git tag v1.0.2-1 && git push --tags` publishes `:1.0.2-1`.
 
 ### Without GitHub (build on the NAS)
 
