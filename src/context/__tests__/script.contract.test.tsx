@@ -32,7 +32,9 @@ const line = (partial: Partial<ScriptLine> & { text: string }): ScriptLine =>
 /** A two-scene script, with a tagged prop on a line of the second. */
 const seed = async () => {
   const { result } = await mountProvider();
-
+  const initialCharacters = structuredClone(
+    result.current.project.characters ?? []
+  );
   const sceneOne = line({ type: 'scene', text: 'INT. KITCHEN - DAY' });
   const keptLine = line({ text: 'JENNA pours coffee.' });
   const sceneTwo = line({ type: 'scene', text: 'EXT. STREET - NIGHT' });
@@ -196,5 +198,70 @@ describe('setScriptLines — the rest of the contract', () => {
     });
 
     expect(result.current.project.setups[0].scriptMarks ?? []).toEqual([]);
+  });
+});
+describe('setScriptLines — character discovery', () => {
+  it('does not permanently save partial character cues while typing', async () => {
+    const { result } = await mountProvider();
+
+    const initialCharacters = structuredClone(
+      result.current.project.characters ?? []
+    );    
+
+    const scene = line({
+      type: 'scene',
+      text: 'INT. HEADQUARTERS - DAY',
+    });
+
+    const character = line({
+      type: 'character',
+      text: '',
+    });
+
+    const name = 'AGENT ROMEO';
+
+    // Simulate typing one character at a time.
+    for (let i = 1; i <= name.length; i++) {
+      const partial = name.slice(0, i);
+
+      await run(() => {
+        result.current.setScriptLines(
+          [scene, { ...character, text: partial }],
+          undefined,
+          { deferCharacterDiscovery: true }
+        );
+      });
+
+      // No partial character should enter the permanent catalog.
+      expect(result.current.project.characters).toEqual(initialCharacters);
+
+      // No scene should reference an unregistered character.
+      expect(result.current.project.scriptScenes?.[0]?.characterIds)
+        .toEqual([]);
+    }
+
+    // Finalize the completed character cue.
+    await run(() => {
+      result.current.setScriptLines([
+        scene,
+        { ...character, text: name },
+      ]);
+    });
+
+    expect(
+      result.current.project.characters?.map((c) => c.canonicalName)
+    ).toEqual([
+      ...initialCharacters.map((c) => c.canonicalName),
+      'AGENT ROMEO',
+    ]);
+
+    const characterId = result.current.project.characters?.find(
+      (c) => c.canonicalName === 'AGENT ROMEO'
+    )?.id;
+
+    expect(characterId).toBeDefined(); 
+
+    expect(result.current.project.scriptScenes?.[0]?.characterIds)
+      .toEqual([characterId]);
   });
 });

@@ -243,7 +243,22 @@ interface FloorPlanContextType {
   /** Write a lining's description onto both the mark and its shot in one step. */
   setLiningDescription: (markId: string, text: string) => void;
   deleteScriptMark: (markId: string, options?: { deleteShot?: boolean }) => void;
-  setScriptLines: (lines: ScriptLine[], meta?: { scriptTitle?: string; scriptText?: string; titlePage?: ScreenplayTitlePage }) => void;
+  
+  /* removed the following to correct random character creation: setScriptLines: (lines: ScriptLine[], meta?: { scriptTitle?: string; scriptText?: string; titlePage?: ScreenplayTitlePage }) => void;
+  */
+  
+setScriptLines: (
+  lines: ScriptLine[],
+  meta?: {
+    scriptTitle?: string;
+    scriptText?: string;
+    titlePage?: ScreenplayTitlePage;
+  },
+  options?: {
+    deferCharacterDiscovery?: boolean;
+  }
+) => void;
+
   /** Edit the screenplay's cover; merges, so one field at a time is fine. */
   setTitlePage: (updates: Partial<ScreenplayTitlePage>) => void;
   /** Lock the current numbers as production numbers, or return to numbering by position. */
@@ -2424,7 +2439,22 @@ export const FloorPlanProvider: React.FC<{ children: React.ReactNode }> = ({ chi
    * strips: affected scene blocks are stamped with an `omittedLabel` and stay
    * visible as OMITTED until the user deletes them.
    */
+/* removed the following to stop random character creation:
   const setScriptLines = (lines: ScriptLine[], meta?: { scriptTitle?: string; scriptText?: string; titlePage?: ScreenplayTitlePage }) => {
+*/
+
+  const setScriptLines = (
+    lines: ScriptLine[],
+    meta?: {
+      scriptTitle?: string;
+      scriptText?: string;
+      titlePage?: ScreenplayTitlePage;
+    },
+    options?: {
+      deferCharacterDiscovery?: boolean;
+    }
+  ) => {
+
     const ids = new Set(lines.map((line) => line.id));
     /**
      * Every line id that still exists, including the ones inside an omitted
@@ -2488,11 +2518,20 @@ export const FloorPlanProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         titlePage: meta?.titlePage ?? prev.titlePage,
         scriptLines: numbered,
         sceneNumbersLocked: locked,
-        scriptScenes: newScenes,
+        scriptScenes: options?.deferCharacterDiscovery
+          ? newScenes.map((scene) => ({
+              ...scene,
+              characterIds: scene.characterIds.filter((id) =>
+                (prev.characters || []).some((character) => character.id === id)
+              ),
+            }))
+          : newScenes,
         // Persist the merged catalog too: a character discovered by this edit
         // has a fresh id, and it has to be the SAME id next time or the scenes
         // and the cast list drift apart again.
-        characters: derived.characters,
+        characters: options?.deferCharacterDiscovery
+          ? (prev.characters || [])
+          : derived.characters,
         setups: prev.setups.map((setup) => ({
           ...setup,
           // The legacy per-setup copy is cleared so there is one source of truth.

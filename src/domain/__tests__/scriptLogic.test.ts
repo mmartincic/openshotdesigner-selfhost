@@ -319,6 +319,7 @@ describe('mergeCharacters', () => {
 });
 
 describe('live script breakdown', () => {
+  
   it('preserves canonical project character ids and links aliases in scenes', () => {
     const canonical = [makeCharacter('char-jane', 'JANE DOE', ['JANE'])];
     const merged = mergeCharacterCatalogs(canonical, [makeCharacter('found', 'JANE')]);

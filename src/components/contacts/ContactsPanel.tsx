@@ -18,6 +18,7 @@ import {
   assignKeyRoleCommand,
   importPeopleCommand,
   removePersonCommand,
+  removeUnusedCharactersCommand,
   setCastNumberCommand,
   upsertPersonCommand,
 } from '../../domain/commands';
@@ -36,7 +37,7 @@ import {
   peopleToCsv,
   usesProductionPhone,
 } from '../../domain/people';
-import { deriveScriptBreakdown } from '../../domain/script/logic';
+import { buildCharacterCatalog, deriveScriptBreakdown } from '../../domain/script/logic';
 import { buildUsageIndex, usagesFor } from '../../domain/usage';
 import { UsageList } from '../common/UsageList';
 import { PersonAvatar } from './PersonAvatar';
@@ -312,6 +313,33 @@ export const ContactsPanel: React.FC = () => {
     () => deriveScriptBreakdown(scriptLines, project.characters ?? [], project.locations ?? []),
     [scriptLines, project.characters, project.locations],
   );
+
+  const unusedCharacters = useMemo(() => {
+    const normalize = (name: string) =>
+      name.replace(/\s+/g, ' ').trim().toLowerCase();
+
+    const activeCharacters = buildCharacterCatalog(scriptLines);
+
+    const activeNames = new Set(
+      activeCharacters.flatMap((character) =>
+        [character.canonicalName, ...character.aliases].map(normalize),
+      ),
+    );
+
+    return (project.characters ?? []).filter((character) => {
+      const names = [
+        character.canonicalName,
+        ...character.aliases,
+      ].map(normalize);
+
+      const appearsInScript = names.some((name) => activeNames.has(name));
+      const hasReferences =
+        usagesFor(usageIndex, 'character', character.id).length > 0;
+
+      return !appearsInScript && !hasReferences;
+    });
+  }, [project.characters, scriptLines, usageIndex]);
+
   // Any person can play a character (assignCast accepts every id); order the
   // dropdown cast-first, then talent, then everyone else, alphabetical within
   // each group.
@@ -323,6 +351,38 @@ export const ContactsPanel: React.FC = () => {
       }),
     [people],
   );
+
+
+const reviewUnusedCharacters = () => {
+  if (unusedCharacters.length === 0) return;
+
+  const names = unusedCharacters
+    .map((character) => character.canonicalName)
+    .join(', ');
+
+  void confirm({
+    title: 'Remove unused characters?',
+    message:
+      `The following ${unusedCharacters.length} character(s) ` +
+      `are not currently used in the screenplay or production records:\n\n` +
+      names +
+      '\n\nRemove these characters from the catalog? ' +
+      'This will not modify the screenplay or cast assignments.',
+    confirmLabel: 'Remove Characters',
+    danger: true,
+  }).then((confirmed) => {
+    if (!confirmed) return;
+
+    runCommand(
+      removeUnusedCharactersCommand,
+      {
+        characterIds: unusedCharacters.map((character) => character.id),
+      },
+      { domain: 'people' },
+    );
+  });
+};
+
 
   const savePerson = () => {
     if (!editing) return;
@@ -643,6 +703,21 @@ export const ContactsPanel: React.FC = () => {
           <h3 className="text-xs font-bold flex items-center gap-2">
             <UserRound className="w-3.5 h-3.5 text-emerald-500" /> Cast assignments &amp; production numbers
           </h3>
+          {unusedCharacters.length > 0 && (
+            <button
+              type="button"
+              onClick={reviewUnusedCharacters}
+              className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+                isLight
+                  ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                  : 'border-amber-800 bg-amber-950/30 text-amber-300 hover:bg-amber-900/40'
+              }`}
+              title="Review obsolete characters before removing them"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Review Unused Characters ({unusedCharacters.length})
+            </button>
+          )}
           <p className={`text-[10px] ${mutedCls}`}>
             Choose a performer for each character. A cast number is assigned automatically; edit the # field to use your production's numbering. Choosing an occupied number swaps the two roles safely.
           </p>

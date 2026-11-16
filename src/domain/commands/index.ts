@@ -52,3 +52,5 @@ export type {
 } from './continuity';
 export { removeLocationCommand, setLocationsCommand } from './locations';
 export type { RemoveLocationInput, SetLocationsInput } from './locations';
+export { removeUnusedCharactersCommand } from './removeUnusedCharacters';
+export type { RemoveUnusedCharactersInput } from './removeUnusedCharacters';
